@@ -53,6 +53,7 @@ import roslaunch.launch
 import roslaunch.pmon
 import roslaunch.server
 import roslaunch.xmlloader
+from roslaunch.nodeprocess import DEFAULT_TIMEOUT_SIGINT, DEFAULT_TIMEOUT_SIGTERM
 
 from rosmaster.master_api import NUM_WORKERS
 
