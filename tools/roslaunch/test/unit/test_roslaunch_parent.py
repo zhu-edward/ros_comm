@@ -59,7 +59,7 @@ class ProcessMonitorMock(object):
         self.procs = []
         self.listeners = []
         self.is_shutdown = False
-        
+
     def join(self, timeout=0):
         pass
 
@@ -71,10 +71,10 @@ class ProcessMonitorMock(object):
 
     def register_core_proc(self, p):
         self.core_procs.append(p)
-        
+
     def registrations_complete(self):
         pass
-        
+
     def unregister(self, p):
         self.procs.remove(p)
 
@@ -89,16 +89,16 @@ class ProcessMonitorMock(object):
 
     def has_main_thread_jobs(self):
         return False
-    
+
     def do_main_thread_jobs(self):
         pass
-    
+
     def kill_process(self, name):
         pass
-        
+
     def shutdown(self):
         self.is_shutdown = True
-        
+
     def get_active_names(self):
         return [p.name for p in self.procs]
 
@@ -109,13 +109,13 @@ class ProcessMonitorMock(object):
 
     def mainthread_spin_once(self):
         pass
-        
+
     def mainthread_spin(self):
         pass
 
     def run(self):
         pass
-            
+
 ## Test roslaunch.server
 class TestRoslaunchParent(unittest.TestCase):
 
@@ -138,7 +138,7 @@ class TestRoslaunchParent(unittest.TestCase):
             run_id = 'test-rl-parent-%s'%time.time()
         name = 'foo-bob'
         server_uri = 'http://localhost:12345'
-        
+
         p = ROSLaunchParent(run_id, [], is_core = True, port=None, local_only=False)
         self.assertEquals(run_id, p.run_id)
         self.assertEquals(True, p.is_core)
@@ -147,7 +147,7 @@ class TestRoslaunchParent(unittest.TestCase):
         rl_dir = rospkg.RosPack().get_path('roslaunch')
         rl_file = os.path.join(rl_dir, 'resources', 'example.launch')
         self.assert_(os.path.isfile(rl_file))
-        
+
         # validate load_config logic
         p = ROSLaunchParent(run_id, [rl_file], is_core = False, port=None, local_only=True)
         self.assertEquals(run_id, p.run_id)
@@ -186,7 +186,7 @@ class TestRoslaunchParent(unittest.TestCase):
             p._load_config()
             self.fail("load config should have failed due to bad rl file")
         except roslaunch.core.RLException: pass
-        
+
         # Mess around with internal repr to get code coverage on _init_runner/_init_remote
         p = ROSLaunchParent(run_id, [], is_core = False, port=None, local_only=True)
         # no config, _init_runner/_init_remote/_start_server should fail
@@ -198,7 +198,7 @@ class TestRoslaunchParent(unittest.TestCase):
 
         # - initialize p.config
         p.config = roslaunch.config.ROSLaunchConfig()
-        
+
         # no pm, _init_runner/_init_remote/_start_server should fail
         for m in ['_init_runner', '_init_remote', '_start_server']:
             try:
@@ -208,13 +208,13 @@ class TestRoslaunchParent(unittest.TestCase):
 
         # - initialize p.pm
         p.pm = pmon
-        
+
         for m in ['_init_runner', '_init_remote']:
             try:
                 getattr(p, m)()
                 self.fail('should have raised')
             except roslaunch.core.RLException: pass
-            
+
         from roslaunch.server import ROSLaunchParentNode
         p.server = ROSLaunchParentNode(p.config, pmon)
         p._init_runner()
@@ -234,11 +234,92 @@ class TestRoslaunchParent(unittest.TestCase):
 
         self.failIf(pmon.is_shutdown)
         p.shutdown()
-        self.assert_(pmon.is_shutdown)        
+        self.assert_(pmon.is_shutdown)
+
+## Test sigint_timeout and sigterm_timeout
+# We need real ProcessMonitor here, and we need to spawn real threads
+class TestRoslaunchTimeouts(unittest.TestCase):
+    def setUp(self):
+        from roslaunch.pmon import ProcessMonitor
+        self.pmon = ProcessMonitor()
+
+    def test_roslaunchTimeouts(self):
+        try:
+            self._subtestTimeouts()
+        finally:
+            self.pmon.shutdown()
+
+    def _subtestTimeouts(self):
+        from roslaunch.parent import ROSLaunchParent
+        from roslaunch.server import ROSLaunchParentNode
+        import signal
+        import tempfile
+        from threading import Thread
+
+        pmon = self.pmon
+        pmon.start()
+        try:
+            # if there is a core up, we have to use its run id
+            run_id = get_param('/run_id')
+        except:
+            run_id = 'test-rl-parent-timeout-%s' % time.time()
+
+        rl_dir = rospkg.RosPack().get_path('roslaunch')
+        rl_file = os.path.join(rl_dir, 'resources', 'timeouts.launch')
+
+        sigint_timeout = 2
+        sigterm_timeout = 3
+
+        p = ROSLaunchParent(run_id, [rl_file], is_core=False, port=11312, local_only=True,
+                            sigint_timeout=sigint_timeout, sigterm_timeout=sigterm_timeout)
+        p._load_config()
+        p.pm = pmon
+        p.server = ROSLaunchParentNode(p.config, pmon)
+
+        signal_log_file = os.path.join(tempfile.gettempdir(), "signal.log")
+        try:
+            os.remove(signal_log_file)
+        except OSError:
+            pass
+
+        def kill_launch(times):
+            time.sleep(3)  # give it time to start
+
+            times.append(time.time())
+            p.shutdown()
+            times.append(time.time())
+
+        p.start()
+
+        times = []
+        t = Thread(target=kill_launch, args=(times,))
+        t.start()
+
+        p.spin()
+        t.join()
+
+        before_stop_call_time, after_stop_call_time = times
+
+        signals = dict()
+        try:
+            with open(signal_log_file, 'r') as f:
+                lines = f.readlines()
+                for line in lines:
+                    sig, timestamp = line.split(" ")
+                    sig = int(sig)
+                    timestamp = float(timestamp)
+                    signals[sig] = timestamp
+        except IOError:
+            self.fail("Could not open %s" % signal_log_file)
+
+        self.assertSetEqual({signal.SIGINT, signal.SIGTERM}, set(signals.keys()))
+        self.assertAlmostEqual(before_stop_call_time, signals[signal.SIGINT], delta=1.0)
+        self.assertAlmostEqual(before_stop_call_time, signals[signal.SIGTERM] - sigint_timeout, delta=1)
+        self.assertAlmostEqual(before_stop_call_time, after_stop_call_time - sigint_timeout - sigterm_timeout, delta=1)
+
 
 def kill_parent(p, delay=1.0):
     # delay execution so that whatever pmon method we're calling has time to enter
     time.sleep(delay)
     print("stopping parent")
     p.shutdown()
-

@@ -68,6 +68,7 @@ except:
     DEFAULT_MASTER_PORT = 11311
 
 from rosmaster.master_api import NUM_WORKERS
+from roslaunch.nodeprocess import DEFAULT_TIMEOUT_SIGINT, DEFAULT_TIMEOUT_SIGTERM
 
 NAME = 'roslaunch'
 
@@ -90,7 +91,7 @@ def configure_logging(uuid):
         roslaunch_core.add_printerrlog_handler(logger.error)
     except:
         print("WARNING: unable to configure logging. No log files will be generated", file=sys.stderr)
-        
+
 def write_pid_file(options_pid_fn, options_core, port):
     if options_pid_fn or options_core:
         # #2987
@@ -107,7 +108,7 @@ def write_pid_file(options_pid_fn, options_core, port):
             # #3828
             if not os.path.exists(ros_home):
                 os.makedirs(ros_home)
-                
+
         with open(pid_fn, "w") as f:
             f.write(str(os.getpid()))
 
@@ -128,7 +129,7 @@ def _get_optparse():
                       dest="node_list", default=False, action="store_true",
                       help="Print list of node names in launch file")
     parser.add_option("--find-node",
-                      dest="find_node", default=None, 
+                      dest="find_node", default=None,
                       help="Find launch file that node is defined in", metavar="NODE_NAME")
     parser.add_option("-c", "--child",
                       dest="child_name", default=None,
@@ -160,7 +161,7 @@ def _get_optparse():
                       dest="port", default=None,
                       help="master port. Only valid if master is launched", metavar="PORT")
     parser.add_option("--core", action="store_true",
-                      dest="core", default=False, 
+                      dest="core", default=False,
                       help="Launch core services only")
     parser.add_option("--pid",
                       dest="pid_fn", default="",
@@ -193,16 +194,26 @@ def _get_optparse():
     parser.add_option("--master-logger-level",
                       dest="master_logger_level", default=False, type=str,
                       help="set rosmaster.master logger level ('debug', 'info', 'warn', 'error', 'fatal')")
+    parser.add_option("--sigint-timeout",
+                      dest="sigint_timeout",
+                      default=DEFAULT_TIMEOUT_SIGINT, type=float,
+                      help="the SIGINT timeout used when killing nodes (in seconds).",
+                      metavar="SIGINT_TIMEOUT")
+    parser.add_option("--sigterm-timeout",
+                      dest="sigterm_timeout",
+                      default=DEFAULT_TIMEOUT_SIGTERM, type=float,
+                      help="the SIGTERM timeout used when killing nodes if SIGINT does not stop the node (in seconds).",
+                      metavar="SIGTERM_TIMEOUT")
 
     return parser
-    
+
 def _validate_args(parser, options, args):
     # validate args first so we don't spin up any resources
     if options.child_name:
         if not options.server_uri:
             parser.error("--child option requires --server_uri to be set as well")
         if not options.run_id:
-            parser.error("--child option requires --run_id to be set as well")                
+            parser.error("--child option requires --run_id to be set as well")
         if options.port:
             parser.error("port option cannot be used with roslaunch child mode")
         if args:
@@ -212,7 +223,7 @@ def _validate_args(parser, options, args):
             parser.error("Input files are not allowed when launching core")
         if options.run_id:
             parser.error("--run_id should only be set for child roslaunches (-c)")
-                
+
         # we don't actually do anything special for core as the roscore.xml file
         # is an implicit include for any roslaunch
 
@@ -228,7 +239,7 @@ def _validate_args(parser, options, args):
 
     if len([x for x in [options.node_list, options.find_node, options.node_args, options.ros_args] if x]) > 1:
         parser.error("only one of [--nodes, --find-node, --args --ros-args] may be specified")
-    
+
 def handle_exception(roslaunch_core, logger, msg, e):
     roslaunch_core.printerrlog(msg + str(e))
     roslaunch_core.printerrlog('The traceback for the exception was written to the log file')
@@ -242,7 +253,7 @@ def main(argv=sys.argv):
     try:
         from . import rlutil
         parser = _get_optparse()
-        
+
         (options, args) = parser.parse_args(argv[1:])
         args = rlutil.resolve_launch_arguments(args)
         _validate_args(parser, options, args)
@@ -273,7 +284,7 @@ def main(argv=sys.argv):
         if options.wait_for_master:
             if options.core:
                 parser.error("--wait cannot be used with roscore")
-            rlutil._wait_for_master()            
+            rlutil._wait_for_master()
 
         # write the pid to a file
         write_pid_file(options.pid_fn, options.core, options.port)
@@ -290,7 +301,7 @@ def main(argv=sys.argv):
         logger = logging.getLogger('roslaunch')
         logger.info("roslaunch starting with args %s"%str(argv))
         logger.info("roslaunch env is %s"%os.environ)
-            
+
         if options.child_name:
             logger.info('starting in child mode')
 
@@ -298,7 +309,9 @@ def main(argv=sys.argv):
             # client spins up an XML-RPC server that waits for
             # commands and configuration from the server.
             from . import child as roslaunch_child
-            c = roslaunch_child.ROSLaunchChild(uuid, options.child_name, options.server_uri)
+            c = roslaunch_child.ROSLaunchChild(uuid, options.child_name, options.server_uri,
+                                               sigint_timeout=options.sigint_timeout,
+                                               sigterm_timeout=options.sigterm_timeout)
             c.run()
         else:
             logger.info('starting in server mode')
@@ -306,7 +319,7 @@ def main(argv=sys.argv):
             # #1491 change terminal name
             if not options.disable_title:
                 rlutil.change_terminal_name(args, options.core)
-            
+
             # Read roslaunch string from stdin when - is passed as launch filename.
             roslaunch_strs = []
             if '-' in args:
@@ -328,7 +341,9 @@ def main(argv=sys.argv):
                     num_workers=options.num_workers, timeout=options.timeout,
                     master_logger_level=options.master_logger_level,
                     show_summary=not options.no_summary,
-                    force_required=options.force_required)
+                    force_required=options.force_required,
+                    sigint_timeout=options.sigint_timeout,
+                    sigterm_timeout=options.sigterm_timeout)
             p.start()
             p.spin()
 

@@ -48,6 +48,7 @@ import rosgraph
 from roslaunch.core import printlog, printerrlog
 import roslaunch.pmon
 import roslaunch.server
+from roslaunch.nodeprocess import DEFAULT_TIMEOUT_SIGINT, DEFAULT_TIMEOUT_SIGTERM
 
 import logging
 _logger = logging.getLogger("roslaunch.remoteprocess")
@@ -121,30 +122,37 @@ then try roslaunching again.
 
 If you wish to configure roslaunch to automatically recognize unknown
 hosts, please set the environment variable ROSLAUNCH_SSH_UNKNOWN=1"""%(resolved_address, port_str, user_str, resolved_address)
-        
+
 class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
     """
     Process wrapper for launching and monitoring a child roslaunch process over SSH
     """
-    def __init__(self, run_id, name, server_uri, machine, master_uri=None):
+    def __init__(self, run_id, name, server_uri, machine, master_uri=None, sigint_timeout=DEFAULT_TIMEOUT_SIGINT, sigterm_timeout=DEFAULT_TIMEOUT_SIGTERM):
         """
         :param machine: Machine instance. Must be fully configured.
             machine.env_loader is required to be set.
+        :param sigint_timeout: The SIGINT timeout used when killing nodes (in seconds).
+        :type sigint_timeout: float
+        :param sigterm_timeout: The SIGTERM timeout used when killing nodes if SIGINT does not stop the node (in seconds).
+        :type sigterm_timeout: float
         """
         if not machine.env_loader:
             raise ValueError("machine.env_loader must have been assigned before creating ssh child instance")
-        args = [machine.env_loader, 'roslaunch', '-c', name, '-u', server_uri, '--run_id', run_id]
+        args = [machine.env_loader, 'roslaunch', '-c', name, '-u', server_uri, '--run_id', run_id,
+                '--sigint-timeout', str(sigint_timeout), '--sigterm-timeout', str(sigterm_timeout)]
         # env is always empty dict because we only use env_loader
         super(SSHChildROSLaunchProcess, self).__init__(name, args, {})
         self.machine = machine
         self.master_uri = master_uri
+        self.sigint_timeout = sigint_timeout
+        self.sigterm_timeout = sigterm_timeout
         self.ssh = self.sshin = self.sshout = self.ssherr = None
         self.started = False
         self.uri = None
         # self.is_dead is a flag set by is_alive that affects whether or not we
-        # log errors during a stop(). 
+        # log errors during a stop().
         self.is_dead = False
-        
+
     def _ssh_exec(self, command, address, port, username=None, password=None):
         """
         :returns: (ssh pipes, message).  If error occurs, returns (None, error message).
@@ -177,7 +185,7 @@ class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
         #load ssh client and connect
         ssh = paramiko.SSHClient()
         err_msg = ssh_check_known_hosts(ssh, address, port, username=username, logger=_logger)
-        
+
         if not err_msg:
             username_str = '%s@'%username if username else ''
             try:
@@ -215,7 +223,7 @@ class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
         to the remote host.
         """
         self.started = False #won't set to True until we are finished
-        self.ssh = self.sshin = self.sshout = self.ssherr = None        
+        self.ssh = self.sshin = self.sshout = self.ssherr = None
         with self.lock:
             name = self.name
             m = self.machine
@@ -230,7 +238,7 @@ class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
                 return False
             self.ssh, self.sshin, self.sshout, self.ssherr = sshvals
             printlog("remote[%s]: ssh connection created"%name)
-            self.started = True            
+            self.started = True
             return True
 
     def getapi(self):
@@ -241,7 +249,7 @@ class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
             return ServerProxy(self.uri)
         else:
             return None
-    
+
     def is_alive(self):
         """
         :returns: ``True`` if the process is alive. is_alive needs to be
@@ -312,18 +320,18 @@ class SSHChildROSLaunchProcess(roslaunch.server.ChildROSLaunchProcess):
                 else:
                     printlog("remote[%s]: unable to contact [%s] to shutdown cleanly. The remote roslaunch may have exited already."%(self.name, address))
             except:
-                # temporary: don't really want to log here as this 
+                # temporary: don't really want to log here as this
                 # may occur during shutdown
                 traceback.print_exc()
 
             _logger.info("remote[%s]: closing ssh connection", self.name)
             self.sshin.close()
             self.sshout.close()
-            self.ssherr.close()                        
+            self.ssherr.close()
             self.ssh.close()
 
             self.sshin  = None
             self.sshout = None
-            self.ssherr = None            
+            self.ssherr = None
             self.ssh = None
-            _logger.info("remote[%s]: ssh connection closed", self.name)            
+            _logger.info("remote[%s]: ssh connection closed", self.name)

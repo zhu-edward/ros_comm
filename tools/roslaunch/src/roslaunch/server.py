@@ -67,9 +67,10 @@ except ImportError:
 import rosgraph.network as network
 import rosgraph.xmlrpc as xmlrpc
 
-import roslaunch.config 
+import roslaunch.config
 from roslaunch.pmon import ProcessListener, Process
 import roslaunch.xmlloader
+from roslaunch.nodeprocess import DEFAULT_TIMEOUT_SIGINT, DEFAULT_TIMEOUT_SIGTERM
 
 from roslaunch.launch import ROSLaunchRunner
 from roslaunch.core import RLException, \
@@ -89,7 +90,7 @@ class ChildROSLaunchProcess(Process):
 
     def set_uri(self, uri):
         self.uri = uri
-    
+
 class ROSLaunchBaseHandler(xmlrpc.XmlRpcHandler):
     """
     Common XML-RPC API for the roslaunch server and child node
@@ -99,7 +100,7 @@ class ROSLaunchBaseHandler(xmlrpc.XmlRpcHandler):
         self.logger = logging.getLogger('roslaunch.server')
         if self.pm is None:
             raise RLException("cannot create xmlrpc handler: pm is not initialized")
-    
+
     #TODO: kill process, restart (with optional prefix). list active, list dead. CPU usage
 
     def list_processes(self):
@@ -156,7 +157,7 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
     """
     XML-RPC API for the roslaunch server node
     """
-    
+
     def __init__(self, pm, child_processes, listeners):
         """
         @param child_processes: Map of remote processes so that server can update processes
@@ -165,7 +166,7 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
         @type  child_processes: {name : ChildROSLaunchProcess}.
         @param listeners [ProcessListener]: list of
         listeners to notify when process_died events occur.
-        """        
+        """
         super(ROSLaunchParentHandler, self).__init__(pm)
         self.child_processes = child_processes
         self.listeners = listeners
@@ -175,11 +176,11 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
         Registration callback from newly launched roslaunch clients
         @param client: name of client
         @type  client: str
-        @param uri: XML-RPC URI of client    
+        @param uri: XML-RPC URI of client
         @type  uri: str
         @return: code, msg, ignore
         @rtype:  int, str, int
-        """        
+        """
         if client not in self.child_processes:
             self.logger.error("Unknown child [%s] registered with server", client)
             return -1, "unknown child [%s]"%client, 0
@@ -192,9 +193,9 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
         """
         List the roslaunch child processes.
         @return int, str, [str]: code, msg, list of the roslaunch children URIS
-        """        
+        """
         return 1, 'roslaunch children', [v.uri for v in self.child_processes.values() if v.uri is not None]
-            
+
     def process_died(self, process_name, exit_code):
         """
         Inform roslaunch server that a remote process has died
@@ -204,14 +205,14 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
         @type  exit_code: int
         @return: code, msg, ignore
         @rtype: int, str, int
-        """        
+        """
         for l in self.listeners:
             try:
                 l.process_died(process_name, exit_code)
             except:
                 self.logger.error(traceback.format_exc())
         return 1, '', 0
-        
+
     def log(self, client, level, message):
         """
         Report a log message to the server
@@ -221,7 +222,7 @@ class ROSLaunchParentHandler(ROSLaunchBaseHandler):
         @type  level: int
         @param message: message to log
         @type  message: str
-        """        
+        """
         try:
             if level >= Log.ERROR:
                 printerrlog("[%s]: %s"%(client, message))
@@ -241,21 +242,26 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
     XML-RPC API implementation for child roslaunches
     NOTE: the client handler runs a process monitor so that
     it can track processes across requests
-    """    
-    
-    def __init__(self, run_id, name, server_uri, pm):
+    """
+
+    def __init__(self, run_id, name, server_uri, pm, sigint_timeout=DEFAULT_TIMEOUT_SIGINT, sigterm_timeout=DEFAULT_TIMEOUT_SIGTERM):
         """
         @param server_uri: XML-RPC URI of server
         @type  server_uri: str
         @param pm: process monitor to use
         @type  pm: L{ProcessMonitor}
+        @param sigint_timeout: The SIGINT timeout used when killing nodes (in seconds).
+        @type  sigint_timeout: float
+        @param sigterm_timeout: The SIGTERM timeout used when killing nodes if SIGINT does not stop the node (
+                                in seconds).
+        @type  sigterm_timeout: float
         @raise RLException: If parameters are invalid
-        """            
-        super(ROSLaunchChildHandler, self).__init__(pm)        
+        """
+        super(ROSLaunchChildHandler, self).__init__(pm)
         if server_uri is None:
             raise RLException("server_uri is not initialized")
         self.run_id = run_id
-        
+
         # parse the URI to make sure it's valid
         _, urlport = network.parse_http_host_and_port(server_uri)
         if urlport <= 0:
@@ -264,6 +270,8 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
         self.name = name
         self.pm = pm
         self.server_uri = server_uri
+        self.sigint_timeout = sigint_timeout
+        self.sigterm_timeout = sigterm_timeout
         self.server = ServerProxy(server_uri)
 
     def _shutdown(self, reason):
@@ -276,7 +284,7 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
             self.pm.shutdown()
             self.pm.join()
             self.pm = None
-        
+
     def shutdown(self):
         """
         @return: code, msg, ignore
@@ -284,7 +292,7 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
         """
         self._shutdown("external call")
         return 1, "success", 1
-    
+
     def _log(self, level, message):
         """
         log message to log file and roslaunch server
@@ -300,7 +308,7 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
                 self.server.log(str(self.name), level, str(message))
         except:
             self.logger.error(traceback.format_exc())
-    
+
     def launch(self, launch_xml):
         """
         Launch the roslaunch XML file. Because this is a child
@@ -309,7 +317,7 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
         @param xml: roslaunch XML file to launch
         @type  xml: str
         @return: code, msg, [ [ successful launches], [failed launches] ]
-        @rtype:  int, str, [ [str], [str] ] 
+        @rtype:  int, str, [ [str], [str] ]
         """
         if self.pm is None:
             return 0, "uninitialized", -1
@@ -319,7 +327,7 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
             roslaunch.xmlloader.XmlLoader().load_string(launch_xml, rosconfig)
         except roslaunch.xmlloader.XmlParseException as e:
             return -1, "ERROR: %s"%e, [[], []]
-        
+
         # won't actually do anything other than local, but still required
         rosconfig.assign_machines()
 
@@ -328,7 +336,8 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
             # mainly the responsibility of the roslaunch server to not give us any XML that might
             # cause conflict (e.g. master tags, param tags, etc...).
             self._log(Log.INFO, "launching nodes...")
-            runner = ROSLaunchRunner(self.run_id, rosconfig, server_uri=self.server_uri, pmon=self.pm)
+            runner = ROSLaunchRunner(self.run_id, rosconfig, server_uri=self.server_uri, pmon=self.pm,
+                                     sigint_timeout=self.sigint_timeout, sigterm_timeout=self.sigterm_timeout)
             succeeded, failed = runner.launch()
             self._log(Log.INFO, "... done launching nodes")
             # enable the process monitor to exit of all processes die
@@ -336,14 +345,14 @@ class ROSLaunchChildHandler(ROSLaunchBaseHandler):
             return 1, "launched", [ succeeded, failed ]
         except Exception as e:
             return 0, "ERROR: %s"%traceback.format_exc(), [[], []]
-    
+
 _STARTUP_TIMEOUT = 5.0 #seconds
 
 class ROSLaunchNode(xmlrpc.XmlRpcNode):
     """
     Base XML-RPC server for roslaunch parent/child processes
     """
-    
+
     def __init__(self, handler):
         """
         @param handler: xmlrpc api handler
@@ -359,15 +368,15 @@ class ROSLaunchNode(xmlrpc.XmlRpcNode):
         logger = logging.getLogger('roslaunch.server')
         logger.info("starting roslaunch XML-RPC server")
         super(ROSLaunchNode, self).start()
-        
+
         # wait for node thread to initialize
         timeout_t = time.time() + _STARTUP_TIMEOUT
-        logger.info("waiting for roslaunch XML-RPC server to initialize")        
+        logger.info("waiting for roslaunch XML-RPC server to initialize")
         while not self.uri and time.time() < timeout_t:
             time.sleep(0.01)
         if not self.uri:
             raise RLException("XML-RPC initialization failed")
-        
+
         # Make sure our xmlrpc server is actually up. We've seen very
         # odd cases where remote nodes are unable to contact the
         # server but have been unable to prove this is the cause.
@@ -389,7 +398,7 @@ class ROSLaunchNode(xmlrpc.XmlRpcNode):
                     p = urlparse(self.uri)
                     raise RLException("Unable to contact the address [%s], which should be local.\nThis is generally caused by:\n * bad local network configuration\n * bad ROS_IP environment variable\n * bad ROS_HOSTNAME environment variable\nCan you ping %s?"%(self.uri, p.hostname))
                 else:
-                    time.sleep(0.1)                    
+                    time.sleep(0.1)
         if not server_up:
             p = urlparse(self.uri)
             raise RLException("""Unable to contact my own server at [%s].
@@ -411,7 +420,7 @@ For more tips, please see
         run() should not be called by higher-level code. ROSLaunchNode
         overrides underlying xmlrpc.XmlRpcNode implementation in order
         to log errors.
-        """        
+        """
         try:
             super(ROSLaunchNode, self).run()
         except:
@@ -422,7 +431,7 @@ class ROSLaunchParentNode(ROSLaunchNode):
     """
     XML-RPC server for parent roslaunch.
     """
-    
+
     def __init__(self, rosconfig, pm):
         """
         @param config: ROSConfig launch configuration
@@ -438,7 +447,7 @@ class ROSLaunchParentNode(ROSLaunchNode):
             raise RLException("cannot create parent node: pm is not initialized")
         handler = ROSLaunchParentHandler(pm, self.child_processes, self.listeners)
         super(ROSLaunchParentNode, self).__init__(handler)
-        
+
     def add_child(self, name, p):
         """
         @param name: child roslaunch's name. NOTE: \a name is not
@@ -446,7 +455,7 @@ class ROSLaunchParentNode(ROSLaunchNode):
         @type  name: str
         @param p: process handle of child
         @type  p: L{Process}
-        """        
+        """
         self.child_processes[name] = p
 
     def add_process_listener(self, l):
@@ -473,33 +482,39 @@ class _ProcessListenerForwarder(ProcessListener):
 class ROSLaunchChildNode(ROSLaunchNode):
     """
     XML-RPC server for roslaunch child processes
-    """    
+    """
 
-    def __init__(self, run_id, name, server_uri, pm):
+    def __init__(self, run_id, name, server_uri, pm, sigint_timeout=DEFAULT_TIMEOUT_SIGINT, sigterm_timeout=DEFAULT_TIMEOUT_SIGTERM):
         """
     ## Startup roslaunch remote client XML-RPC services. Blocks until shutdown
     ## @param name: name of remote client
     ## @type  name: str
     ## @param server_uri: XML-RPC URI of roslaunch server
     ## @type  server_uri: str
+    ## @param sigint_timeout: The SIGINT timeout used when killing nodes (in seconds).
+    ## @type  sigint_timeout: float
+    ## @param sigterm_timeout: The SIGTERM timeout used when killing nodes if SIGINT does not stop the node (
+    ##                         in seconds).
+    ## @type  sigterm_timeout: float
     ## @return: XML-RPC URI
     ## @rtype: str
-        """        
+        """
         self.logger = logging.getLogger("roslaunch.server")
         self.run_id = run_id
         self.name = name
         self.server_uri = server_uri
         self.pm = pm
-        
+
         if self.pm is None:
             raise RLException("cannot create child node: pm is not initialized")
-        handler = ROSLaunchChildHandler(self.run_id, self.name, self.server_uri, self.pm)
+        handler = ROSLaunchChildHandler(self.run_id, self.name, self.server_uri, self.pm,
+                                        sigint_timeout=sigint_timeout, sigterm_timeout=sigterm_timeout)
         super(ROSLaunchChildNode, self).__init__(handler)
 
     def _register_with_server(self):
         """
         Register child node with server
-        """        
+        """
         name = self.name
         self.logger.info("attempting to register with roslaunch parent [%s]"%self.server_uri)
         try:
@@ -511,16 +526,16 @@ class ROSLaunchChildNode(ROSLaunchNode):
             self.logger.error("Exception while registering with roslaunch parent [%s]: %s"%(self.server_uri, traceback.format_exc()))
             # fail
             raise RLException("Exception while registering with roslaunch parent [%s]: %s"%(self.server_uri, traceback.format_exc()))
-        
+
         self.logger.debug("child registered with server")
-        
+
         # register printlog handler so messages are funneled to remote
         def serverlog(msg):
             server.log(name, Log.INFO, msg)
         def servererrlog(msg):
             server.log(name, Log.ERROR, msg)
         add_printlog_handler(serverlog)
-        add_printerrlog_handler(servererrlog)            
+        add_printerrlog_handler(servererrlog)
 
         # register process listener to forward process death events to main server
         self.pm.add_process_listener(_ProcessListenerForwarder(server))
@@ -528,7 +543,7 @@ class ROSLaunchChildNode(ROSLaunchNode):
     def start(self):
         """
         Initialize child. Must be called before run
-        """        
+        """
         self.logger.info("starting roslaunch child process [%s], server URI is [%s]", self.name, self.server_uri)
         super(ROSLaunchChildNode, self).start()
         self._register_with_server()
